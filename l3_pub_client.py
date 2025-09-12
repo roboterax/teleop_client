@@ -82,11 +82,30 @@ class WR1ControlDemo(Node):
         self.get_logger().info('Initialize joint module...')
         self.call_service(self.ready_cli, Trigger.Request())
 
+        # Send joint zero trajectory
+        self.get_logger().info('Wait simple_trajectory service...')
+        self.traj_client.wait_for_server()
+        self.get_logger().info('Reset...')
+        goal = SimpleTrajectory.Goal()
+        goal.traj_type = 0
+        goal.duration = 4.0
+        self.get_logger().info('Wait send joint reset trajectory...')
+        self.traj_client.wait_for_server()
+        self.get_logger().info('Send joint reset trajectory...')
+        send_goal_future = self.traj_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_goal_future)
+        goal_handle = send_goal_future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error('Reset Action Goal not accepted')
+        else:
+            rclpy.spin_until_future_complete(self, goal_handle.get_result_async())
+        time.sleep(1)
+
         # Send joint arm lifting trajectory
         self.get_logger().info('Lift your arm...')
         goal = SimpleTrajectory.Goal()
-        goal.traj_type = 14
-        goal.duration = 6.0
+        goal.traj_type = 2
+        goal.duration = 4.0
         self.get_logger().info('Waiting to send the arm lift trajectory...')
         self.traj_client.wait_for_server()
         self.get_logger().info('Send arm lift trajectory...')
@@ -157,89 +176,161 @@ class MinimalPublisher(Node):
         except Exception as e:
             self.get_logger().error(f"send faild: {e}")
 
-def read_from_file_v2(file_path="key.dat"):
-    try:
-        with open(file_path, "r", encoding="utf-8") as file:
-            first_line = file.readline().strip()
+    def run2(self, typeT, data_dict):
+        try:
 
-        if not first_line:
-            raise ValueError(f"Error: The file {file_path} is empty or does not contain a valid signature.")
+            max_wait_time = 10.0
+            start_time = time.time()
 
-        return first_line
+            while not self.client.wait_for_service(timeout_sec=10):
+                self.get_logger().info('Service not available, waiting...')
+                if time.time() - start_time > max_wait_time:
+                    self.get_logger().error('Service wait timeout!')
+                return 
+            json_dict = {"type" : typeT, "message" : json.dumps(data_dict)}
+            json_data = json.dumps(json_dict)
+            request = StringMessage.Request()
+            request.data = json_data
 
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Error: The file {file_path} does not exist.")
-    except Exception as e:
-        raise IOError(f"Error: Could not read from file {file_path}. {str(e)}")
+            future = self.client.call_async(request)
+            rclpy.spin_until_future_complete(self, future)
+            if future.result() is not None:
+                self.get_logger().info(f'Service call succeeded: {future.result().result, future.result().message}')
+            else:
+                self.get_logger().error('Service call failed')
+        except Exception as e:
+            self.get_logger().error(f"send faild: {e}")
 
-def start(minimal_publisher, cmd, verify_path, hand, mocap, camera_type,enable_capture_audio, enable_player_audio):
-    if not os.path.exists(verify_path):
-        print("verify_path path not exist")
+    def run3(self, cmd, data_dict):
+        try:
+
+            max_wait_time = 10.0
+            start_time = time.time()
+
+            while not self.client.wait_for_service(timeout_sec=10):
+                self.get_logger().info('Service not available, waiting...')
+                if time.time() - start_time > max_wait_time:
+                    self.get_logger().error('Service wait timeout!')
+                return 
+            json_dict = {"command" : cmd, "message" : json.dumps(data_dict)}
+            json_data = json.dumps(json_dict)
+            request = StringMessage.Request()
+            request.data = json_data
+
+            future = self.client.call_async(request)
+            rclpy.spin_until_future_complete(self, future)
+            if future.result() is not None:
+                self.get_logger().info(f'Service call succeeded: {future.result().result, future.result().message}')
+            else:
+                self.get_logger().error('Service call failed')
+        except Exception as e:
+            self.get_logger().error(f"send faild: {e}")
+
+def start_webxr(data_dict, camera_type, enable_capture_audio, enable_player_audio):
+
+    if camera_type == None:
+        print("not Parameter camera_type")
         sys.exit(0)
-    path = Path(verify_path)
-    if not path.is_dir():
-        print("verify_path path not dir")
-        sys.exit(0)
-    auth = verify_path + "/auth_info.json"
-    key = verify_path + "/key.dat"
 
-    if not os.path.exists(auth):
-        print("auth path not exist")
-        sys.exit(0)
-    if not os.path.exists(key):
-        print("key path not exist")
-        sys.exit(0)
-    if hand == None or mocap == None or camera_type == None:
-        print("not Parameter hand or mocap or camera_type")
-        sys.exit(0)
+    data_dict["camera_type"] = camera_type
 
-    with open(auth, "r", encoding="utf-8") as file:
-        data = json.load(file)
-        auth_str = json.dumps(data)
-    verify = {"auth" : auth_str, "key": read_from_file_v2(key), "hand" : hand, "mocap" : mocap, "camera_type" : camera_type}
     if enable_capture_audio:
-        verify["enable_capture_audio"] = enable_capture_audio
+        data_dict["enable_capture_audio"] = enable_capture_audio
     if enable_player_audio:
-        verify["enable_player_audio"] = enable_player_audio
+        data_dict["enable_player_audio"] = enable_player_audio
 
-    minimal_publisher.run(cmd, json.dumps(verify))
 
-def start_any(minimal_publisher, cmd):
-    minimal_publisher.run(cmd, "")
 
-def stop(minimal_publisher, cmd):
-    minimal_publisher.run(cmd, "")
+def start_retargetx(data_dict, hand, mocap):
+    if hand == None or mocap == None:
+        print("not Parameter hand or mocap")
+        sys.exit(0)
+    data_dict["hand"] = hand
+    data_dict["mocap"] = mocap
 
-# one
+
+def start_cmd(minimal_publisher, enable):
+    if enable not in ["0", "1"]:
+        print("mpc reset mode not support")
+        return
+    data_dict = {"enable": bool(int(enable))}
+    minimal_publisher.run3("enableRL", data_dict)
+
+
+def start_any(minimal_publisher, typeT, cmd, hand, mocap, camera_type,enable_capture_audio, enable_player_audio, mode):
+    data_dict = {"command": cmd}
+    if typeT == 'webxr':
+        if cmd == "start":
+            start_webxr(data_dict, camera_type, enable_capture_audio, enable_player_audio)
+            minimal_publisher.run2(typeT, data_dict)
+            return
+        minimal_publisher.run2(typeT, data_dict)
+    elif typeT == "mpc":
+        if cmd == "reset":
+            if mode is None:
+                print("mpc reset need mode")
+                return
+            if mode not in ["0", "1"]:
+                print("mpc reset mode not support")
+                return
+            data_dict["mode"] = int(mode)
+            minimal_publisher.run2(typeT, data_dict)
+            return
+
+        minimal_publisher.run2(typeT, data_dict)
+        return
+    elif typeT == "rl":
+        minimal_publisher.run2(typeT, data_dict)
+        return
+    elif typeT == "retargetx":
+        if cmd == "start":
+            start_retargetx(data_dict, hand, mocap)
+            minimal_publisher.run2(typeT, data_dict)
+            return
+        minimal_publisher.run2(typeT, data_dict)
+
+
+
 # Priority activation of SDK functionality
 # python pub_client.py --cmd start_sdk
 
-# two
-# Start remote operation
-# python pub_client.py init_teleop --verify [path] --hand [xhand | lite] --mocap [vr | gamepad] --camera-type [dummy | realsense | stereo] # Path is the authorized file path
 
-# three
+# Start remote operation
+# python pub_client.py --type  webxr --cmd start --camera-type [dummy | realsense | stereo]
+# python pub_client.py --type  webxr --cmd query
+# python pub_client.py --type  webxr --cmd stop
+
+# python pub_client.py --type  retargetx --cmd start --hand [xhand | lite]
+# python pub_client.py --type  retargetx --cmd query
+# python pub_client.py --type  retargetx --cmd stop
+
+# python pub_client.py --type  mpc --cmd start
+# python pub_client.py --type  mpc --cmd query
+# python pub_client.py --type  mpc --cmd stop
+
+
+# python pub_client.py --type  rl --cmd start
+# python pub_client.py --type  rl --cmd query
+# python pub_client.py --type  rl --cmd stop
+
 # Start control
 # python pub_client.py --cmd start_teleop
 
-# four
-# Stop remote operation service
-# python pub_client.py --cmd stop_teleop
 
-# five
 # Stop sdk
 # python pub_client.py --cmd stop_sdk
 
 def main(args=None):
     rclpy.init(args=args)
     parser = argparse.ArgumentParser(description="client", allow_abbrev=False)
-    parser.add_argument("--cmd", help="start_sdk | init_teleop | start_teleop | stop_teleop | stop_sdk")
-    parser.add_argument("--verify", help="verify path")
+    parser.add_argument("--cmd", help="start_sdk | start_teleop |  stop_sdk | start | stop | reset | query | enable_rl")
+    parser.add_argument("--type", help="webxr | retargetx | mpc | rl")
     parser.add_argument("--hand", help="xhand | lite")
     parser.add_argument("--mocap", help="vr | gamepad")
+    parser.add_argument("--mode", help="0 | 1")
     parser.add_argument("--camera-type", help="dummy | realsense | stereo")
     parser.add_argument("--enable_capture_audio", help="device name:[default]")
-    parser.add_argument("--enable_player_audio", help="device name:[default]")
+    parser.add_argument("--enable_player_audio", help="device id:[6]")
     
     
     args = parser.parse_args()
@@ -251,24 +342,23 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
         return
-    elif args.cmd == "init_teleop" :
-        if args.verify is None:
-            print("start need verify path")
-            return
-        start(minimal_publisher,args.cmd, args.verify, args.hand, args.mocap, args.camera_type, args.enable_capture_audio, args.enable_player_audio)
     elif args.cmd == "start_teleop":
         node = StartControlDemo()
         node.run()
         node.destroy_node()
         rclpy.shutdown()
         return
-    elif args.cmd == "stop_teleop":
-        stop(minimal_publisher, args.cmd)
     elif args.cmd == "stop_sdk":
         node = WR1ControlDemo()
         node.stop_sdk()
         node.destroy_node()
         rclpy.shutdown()
+        return
+    elif args.cmd == "enable_rl":
+         start_cmd(minimal_publisher, args.mode)
+         return
+    else :
+        start_any(minimal_publisher,args.type, args.cmd, args.hand, args.mocap, args.camera_type, args.enable_capture_audio, args.enable_player_audio, args.mode)
         return
         
 
